@@ -36,6 +36,15 @@
 # - Finds parts of GROMACS
 # Find the native GROMACS components headers and libraries.
 #
+# If no components are requested, this macro searches for libgromacs,
+# and libgmx in that order, including double and MPI variants of the
+# libraries, and uses the first component found.  The order of
+# precendence of the variants is MPI+double, MPI, double, and finally
+# the vanilla library.
+#
+# If components are requested, they are filtered against the above
+# white-list of components.
+#
 #  GROMACS_INCLUDE_DIRS   - where to find GROMACS headers.
 #  GROMACS_LIBRARIES      - List of libraries when used by GROMACS.
 #  GROMACS_FOUND          - True if all GROMACS components were found.
@@ -51,185 +60,137 @@
 ########## To add Path of CMAKE_PREFIX_PATH in PKG_CONFIG_PATH ###########
 include(GNUInstallDirs)
 find_package(PkgConfig)
-set(_pkgconfig_path $ENV{PKG_CONFIG_PATH})
 foreach(_dir $ENV{CMAKE_PREFIX_PATH})
-	# In gromacs-4.5 and 4.6
-	if(IS_DIRECTORY "${_dir}/lib/pkgconfig/")
-		set(ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:${_dir}/lib/pkgconfig")
-	endif()
-	# In gormacs 5.0 and later
-	if(IS_DIRECTORY "${_dir}/${CMAKE_INSTALL_LIBDIR}/pkgconfig/")
-		set(ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:${_dir}/${CMAKE_INSTALL_LIBDIR}/pkgconfig")
-	endif()
+  # In GROMACS-4.5 and 4.6
+  if(IS_DIRECTORY "${_dir}/lib/pkgconfig/")
+    set(ENV{PKG_CONFIG_PATH}
+      "$ENV{PKG_CONFIG_PATH}:${_dir}/lib/pkgconfig")
+  endif()
+  # In GROMACS 5.0 and later
+  if(IS_DIRECTORY "${_dir}/${CMAKE_INSTALL_LIBDIR}/pkgconfig/")
+    set(ENV{PKG_CONFIG_PATH}
+      "$ENV{PKG_CONFIG_PATH}:${_dir}/${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+  endif()
 endforeach()
 #########################################################################
 
-####### To add path of gromacs if manually given by user ################
+####### To add path of GROMACS if manually given by user ################
 if(DEFINED GMX_PATH)
-	if(IS_DIRECTORY "${GMX_PATH}/lib/pkgconfig/")
-		set(ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:${GMX_PATH}/lib/pkgconfig")
-	endif()
-	if(IS_DIRECTORY "${GMX_PATH}/${CMAKE_INSTALL_LIBDIR}/pkgconfig/")
-		set(ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:${GMX_PATH}/${CMAKE_INSTALL_LIBDIR}/pkgconfig")
-	endif()
+  if(IS_DIRECTORY "${GMX_PATH}/lib/pkgconfig/")
+    set(ENV{PKG_CONFIG_PATH}
+      "$ENV{PKG_CONFIG_PATH}:${GMX_PATH}/lib/pkgconfig")
+  endif()
+  if(IS_DIRECTORY "${GMX_PATH}/${CMAKE_INSTALL_LIBDIR}/pkgconfig/")
+    set(ENV{PKG_CONFIG_PATH}
+      "$ENV{PKG_CONFIG_PATH}:${GMX_PATH}/${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+  endif()
 endif()
 #########################################################################
 
-list(LENGTH GROMACS_FIND_COMPONENTS GROMACS_NUM_COMPONENTS_WANTED)
-if(${GROMACS_NUM_COMPONENTS_WANTED} LESS 1)
-  message(FATAL_ERROR "find_package(GROMACS) needs to be supplied with the name of a GROMACS component for which it can search")
-elseif(${GROMACS_NUM_COMPONENTS_WANTED} GREATER 1)
-  message(FATAL_ERROR "We only support finding one GROMACS component at this point, go and implement it ;-)")
-elseif(${GROMACS_FIND_COMPONENTS} MATCHES "^lib(gmx|gromacs)(_d)?$")
-  set(GROMACS_PKG "${GROMACS_FIND_COMPONENTS}")
-  string(REGEX REPLACE "^lib(.*)" "\\1" GROMACS_LIBRARY_NAME "${GROMACS_PKG}")
+# Generate the white-list of GROMACS supported components.
+#
+# Prefer MPI, double variants over vanilla libraries.  We don't use
+# more efficient list() macros here because we need a specific order.
+set(libs gromacs gmx)
+set(suffixes_mpi _mpi "")
+if(GMX_DOUBLE)
+  set(suffixes_d _d)
 else()
-  message(FATAL_ERROR "We do not support finding ${GROMACS_FIND_COMPONENTS}, go and implement it ;-)")
+  set(suffixes_d _d "")
+endif()
+foreach(_suffix_mpi IN LISTS suffixes_mpi)
+  foreach(_suffix_d IN LISTS suffixes_d)
+    list(APPEND suffixes "${_suffix_mpi}${_suffix_d}")
+  endforeach()
+endforeach()
+foreach(_lib IN LISTS libs)
+  foreach(_suffix IN LISTS suffixes)
+    list(APPEND GROMACS_COMPONENTS_TO_SEARCH "${_lib}${_suffix}")
+  endforeach()
+endforeach()
+
+# Use find_package COMPONENTS if provided, filtering by valid
+# components.  Assume we only want one of each component.
+list(LENGTH GROMACS_FIND_COMPONENTS GROMACS_NUM_COMPONENTS_WANTED)
+if(${GROMACS_NUM_COMPONENTS_WANTED})
+  list(FILTER GROMACS_COMPONENTS_TO_SEARCH
+    INCLUDE REGEX
+    string(REPLACE ; | "(${GROMACS_VALID_LIBRARY_NAMES})"))
+  list(LENGTH GROMACS_COMPONENTS_TO_SEARCH GROMACS_NUM_COMPONENTS_VALID)
+  if(${GROMACS_NUM_COMPONENTS_VALID LESS 1)
+    message(FATAL_ERROR "\
+Requested GROMACS component(s) not yet implemented.
+Requested component(s): ${GROMACS_FIND_COMPONENTS}
+Allowed: ${GROMACS_LIBRARY_NAMES}")
+  endif()
 endif()
 
-if(GMX_DOUBLE AND NOT "${GROMACS_PKG}" MATCHES "_d$")
-  message(FATAL_ERROR "GMX_DOUBLE was true, but I was asked to find ${GROMACS_PKG} (without _d at the end) - illogical!")
-endif(GMX_DOUBLE AND NOT "${GROMACS_PKG}" MATCHES "_d$")
-if(NOT GMX_DOUBLE AND "${GROMACS_PKG}" MATCHES "_d$")
-  message(FATAL_ERROR "GMX_DOUBLE was false, but I was asked to find ${GROMACS_PKG} (with _d at the end) - illogical!")
-endif(NOT GMX_DOUBLE AND "${GROMACS_PKG}" MATCHES "_d$")
+# Search for first available package.
+foreach(GROMACS_LIB_NAME IN LISTS GROMACS_COMPONENTS_TO_SEARCH)
+  set(GROMACS_PKG "lib${GROMACS_LIB_NAME}")
+  pkg_check_modules(PC_GROMACS "${GROMACS_PKG}")
+  find_library(GROMACS_LIBRARY
+    NAMES ${GROMACS_LIB_NAME}
+    HINTS ${PC_GROMACS_LIBRARY_DIRS} ${PC_GROMACS_STATIC_LIBRARY_DIRS})
+  if(PC_GROMACS_FOUND)
+    break()
+  endif()
+endforeach()
+if(NOT PC_GROMACS_FOUND)
+  message(FATAL_ERROR "Could not find any of the GROMACS libraries")
+endif()
 
-pkg_check_modules(PC_GROMACS ${GROMACS_PKG})
-set(ENV{PKG_CONFIG_PATH} ${_pkgconfig_path})
-
-if (GMX_DOUBLE)
+# Definition flags
+if(GMX_DOUBLE)
   list(APPEND GMX_DEFS "-DGMX_DOUBLE")
-endif(GMX_DOUBLE)
-if (PC_GROMACS_CFLAGS_OTHER)
+endif()
+if(PC_GROMACS_CFLAGS_OTHER)
   foreach(DEF ${PC_GROMACS_CFLAGS_OTHER})
-    if (${DEF} MATCHES "^-D")
+    if(${DEF} MATCHES "^-D")
       list(APPEND GMX_DEFS ${DEF})
-    endif (${DEF} MATCHES "^-D")
-  endforeach(DEF)
+    endif()
+  endforeach()
   list(REMOVE_DUPLICATES GMX_DEFS)
-endif (PC_GROMACS_CFLAGS_OTHER)
+endif()
 set(GROMACS_DEFINITIONS "${GMX_DEFS}" CACHE STRING "extra GROMACS definitions")
 
-find_library(GROMACS_LIBRARY NAMES ${GROMACS_LIBRARY_NAME} HINTS ${PC_GROMACS_LIBRARY_DIRS} ${PC_GROMACS_STATIC_LIBRARY_DIRS} )
-if (GROMACS_LIBRARY)
-  if("${GROMACS_LIBRARY}" MATCHES "lib(gmx|gromacs)[^;]*(\\.a|\\.so)")
-    if(PC_GROMACS_LIBRARIES)
-      list(REMOVE_ITEM PC_GROMACS_LIBRARIES ${GROMACS_LIBRARY_NAME})
-      foreach (LIB ${PC_GROMACS_LIBRARIES})
-        find_library(GROMACS_${LIB} ${LIB} HINTS ${PC_GROMACS_LIBRARY_DIRS})
-        if(GROMACS_${LIB})
-					list(APPEND GMX_DEP_LIBRARIES ${GROMACS_${LIB}})
-				endif(GROMACS_${LIB})
-				#list(APPEND GMX_DEP_LIBRARIES "-l${LIB}")
-        unset(GROMACS_${LIB} CACHE)
-      endforeach(LIB)
-    endif(PC_GROMACS_LIBRARIES)
-    if(PC_GROMACS_CFLAGS_OTHER)
-      foreach(LIB ${PC_GROMACS_CFLAGS_OTHER})
-        if (${LIB} MATCHES "thread")
-          find_package(Threads REQUIRED)
-          list(APPEND GMX_DEP_LIBRARIES ${CMAKE_THREAD_LIBS_INIT})
-        endif (${LIB} MATCHES "thread")
-      endforeach(LIB)
-    endif(PC_GROMACS_CFLAGS_OTHER)
+# GROMACS version
+set(GROMACS_VERSION "${PC_GROMACS_VERSION}")
+string(REPLACE "." ";" VERSION_LIST ${GROMACS_VERSION})
+list(GET VERSION_LIST 0 GROMACS_MAJOR_VERSION)
+list(GET VERSION_LIST 1 GROMACS_MINOR_VERSION)
+list(LENGTH VERSION_LIST LEN_GMX_VER_LIST)
+# Not available after 2016 versions
+if(${LEN_GMX_VER_LIST} MATCHES "3")
+  list(GET VERSION_LIST 2 GROMACS_PATCH_LEVEL)
+endif()
+set(GROMACS_VERSION_STRING "${GROMACS_VERSION}")
 
-		# Information of few shared libraies are not present in pkgconfig file. Listed and added here
-		if("${GROMACS_LIBRARY}" MATCHES "lib(gmx|gromacs)[^;]*(\\.so)")
-			INCLUDE(GetPrerequisites)
-			GET_PREREQUISITES(${GROMACS_LIBRARY} DEPENDENCIES 0 0 "" "")
-			FOREACH(DEPENDENCY ${DEPENDENCIES})
-				if( NOT ("${GMX_DEP_LIBRARIES}" MATCHES "dl") AND "${DEPENDENCY}" MATCHES "libdl")
-					list(APPEND GMX_DEP_LIBRARIES "-ldl")
-				endif(NOT ("${GMX_DEP_LIBRARIES}" MATCHES "dl") AND "${DEPENDENCY}" MATCHES "libdl")
-			ENDFOREACH()
-		endif("${GROMACS_LIBRARY}" MATCHES "lib(gmx|gromacs)[^;]*(\\.so)")
+# GROMACS include directories
+if("${GROMACS_PKG}" MATCHES "libgmx")
+  if(${GROMACS_VERSION} VERSION_GREATER "4.5.0"
+      OR ${GROMACS_VERSION} VERSION_EQUAL "4.5.0")
+    find_path(GROMACS_INCLUDE_DIR gromacs/tpxio.h
+      HINTS ${PC_GROMACS_INCLUDE_DIRS})
+  elseif(${GROMACS_VERSION} VERSION_GREATER "4.6.0"
+      OR ${GROMACS_VERSION} VERSION_EQUAL "4.6.0")
+    find_path(GROMACS_INCLUDE_DIR gromacs/tpxio.h
+      HINTS ${PC_GROMACS_INCLUDE_DIRS})
+  endif()
+elseif("${GROMACS_PKG}" MATCHES "libgromacs"
+    OR "${GROMACS_PKG}" MATCHES "libgromacs_mpi")
+  find_path(GROMACS_INCLUDE_DIR gromacs/version.h
+    HINTS ${PC_GROMACS_INCLUDE_DIRS})
+endif()
 
-
-		if( NOT ("${GMX_DEP_LIBRARIES}" MATCHES "pthread") AND "${PC_GROMACS_STATIC_LIBRARIES}" MATCHES "pthread")
-			 list(APPEND GMX_DEP_LIBRARIES "-lpthread")
-		endif(NOT ("${GMX_DEP_LIBRARIES}" MATCHES "pthread") AND "${PC_GROMACS_STATIC_LIBRARIES}" MATCHES "pthread")
-
-		if( NOT ("${GMX_DEP_LIBRARIES}" MATCHES "libm|-lm") )
-			list(APPEND GMX_DEP_LIBRARIES "-lm")
-		endif(NOT ("${GMX_DEP_LIBRARIES}" MATCHES "libm|-lm") )
-
-		if( NOT ("${GMX_DEP_LIBRARIES}" MATCHES "dl") AND "${PC_GROMACS_STATIC_LIBRARIES}" MATCHES "dl")
-			list(APPEND GMX_DEP_LIBRARIES "-ldl")
-		endif(NOT ("${GMX_DEP_LIBRARIES}" MATCHES "dl") AND "${PC_GROMACS_STATIC_LIBRARIES}" MATCHES "dl")
-
-		if( NOT ("${GMX_DEP_LIBRARIES}" MATCHES "openmp") AND "${PC_GROMACS_STATIC_LDFLAGS}" MATCHES "openmp")
-			list(APPEND GMX_DEP_LIBRARIES "-fopenmp")
-		endif(NOT ("${GMX_DEP_LIBRARIES}" MATCHES "openmp") AND "${PC_GROMACS_STATIC_LDFLAGS}" MATCHES "openmp")
-
-		if( NOT ("${GMX_DEP_LIBRARIES}" MATCHES "fftw3") AND "${PC_GROMACS_STATIC_LDFLAGS}" MATCHES "fftw3")
-			find_library(FFTW fftw3f HINTS ${FFTW_LIB})
-			if (FFTW)
-				message(STATUS "Found fftw library: ${FFTW}")
-				list(APPEND GMX_DEP_LIBRARIES ${FFTW})
-			else(FFTW)
-				message(FATAL_ERROR "\nFFTW library file libfftw3f.so or libfftw3f.a not found... \nUSE:\n -DFFTW_LIB=/path/to/fftw3/lib/    ")
-			endif(FFTW)
-		endif(NOT ("${GMX_DEP_LIBRARIES}" MATCHES "fftw3") AND "${PC_GROMACS_STATIC_LDFLAGS}" MATCHES "fftw3")
-
-		if ( NOT ("${GMX_DEP_LIBRARIES}" MATCHES "fftw3") AND ${PC_GROMACS_VERSION} VERSION_GREATER "4.6.0")
-			find_library(FFTW fftw3f HINTS ${FFTW_LIB})
-			if (FFTW)
-				message(STATUS "Found fftw library: ${FFTW}")
-				list(APPEND GMX_DEP_LIBRARIES ${FFTW})
-			else(FFTW)
-				message(FATAL_ERROR "\nFFTW library file libfftw3f.so or libfftw3f.a not found... \nUSE:\n -DFFTW_LIB=/path/to/fftw3/lib/    ")
-			endif(FFTW)
-		endif ( NOT ("${GMX_DEP_LIBRARIES}" MATCHES "fftw3") AND ${PC_GROMACS_VERSION} VERSION_GREATER "4.6.0")
-
-		if(${PC_GROMACS_VERSION} VERSION_EQUAL "5.0" OR ${PC_GROMACS_VERSION} VERSION_GREATER "5.0")
-			find_library(ZLIB z HINTS ${ZLIB_PATH})
-			if(ZLIB)
-				message(STATUS "Found z library: ${ZLIB}")
-				list(APPEND GMX_DEP_LIBRARIES ${ZLIB})
-			else(ZLIB)
-				message(WARNING "libz.a or libz.so not found.\n In case of FUTURE ERROR: undefined reference to `uncompress',\n  Use: -DZLIB_PATH=/path/to/zlib.a(so).\n")
-			endif(ZLIB)
-		endif(${PC_GROMACS_VERSION} VERSION_EQUAL "5.0" OR ${PC_GROMACS_VERSION} VERSION_GREATER "5.0")
-
-
-    set(GROMACS_DEP_LIBRARIES "${GMX_DEP_LIBRARIES}" CACHE FILEPATH "GROMACS dependency libs (only needed for static (.a) ${GROMACS_LIBRARY}")
-
-  endif("${GROMACS_LIBRARY}" MATCHES "lib(gmx|gromacs)[^;]*(\\.a|\\.so)")
-
-  # Getting Gromacs version
-  set(GROMACS_VERSION "${PC_GROMACS_VERSION}")
-  string(REPLACE "." ";" VERSION_LIST ${GROMACS_VERSION})
-  list(GET VERSION_LIST 0 GROMACS_MAJOR_VERSION)
-  list(GET VERSION_LIST 1 GROMACS_MINOR_VERSION)
-  list(LENGTH VERSION_LIST LEN_GMX_VER_LIST)
-  # Not available after 2016 versions
-  if (${LEN_GMX_VER_LIST} MATCHES "3")
-    list(GET VERSION_LIST 2 GROMACS_PATCH_LEVEL)
-  endif( ${LEN_GMX_VER_LIST} MATCHES "3" )
-
-  set(GROMACS_VERSION_STRING "${GROMACS_VERSION}")
-
-else(GROMACS_LIBRARY)
-  set(GROMACS_VERSION "4.5.0")
-endif (GROMACS_LIBRARY)
-
-
-if ("${GROMACS_PKG}" MATCHES "libgmx")
-  if (${GROMACS_VERSION} VERSION_GREATER "4.5.0" OR ${GROMACS_VERSION} VERSION_EQUAL "4.5.0")
-   find_path(GROMACS_INCLUDE_DIR gromacs/tpxio.h HINTS ${PC_GROMACS_INCLUDE_DIRS} )
-	elseif(${GROMACS_VERSION} VERSION_GREATER "4.6.0" OR ${GROMACS_VERSION} VERSION_EQUAL "4.6.0")
-	find_path(GROMACS_INCLUDE_DIR gromacs/tpxio.h HINTS ${PC_GROMACS_INCLUDE_DIRS} )
-  endif(${GROMACS_VERSION} VERSION_GREATER "4.5.0" OR ${GROMACS_VERSION} VERSION_EQUAL "4.5.0")
-elseif("${GROMACS_PKG}" MATCHES "libgromacs")
-  find_path(GROMACS_INCLUDE_DIR gromacs/version.h HINTS ${PC_GROMACS_INCLUDE_DIRS} )
-endif("${GROMACS_PKG}" MATCHES "libgmx")
-
-set(GROMACS_LIBRARIES "${GROMACS_LIBRARY};${GROMACS_DEP_LIBRARIES}" )
-set(GROMACS_INCLUDE_DIRS ${GROMACS_INCLUDE_DIR} )
+set(GROMACS_LIBRARIES "${GROMACS_LIBRARY}")
+set(GROMACS_INCLUDE_DIRS ${GROMACS_INCLUDE_DIR})
 
 include(FindPackageHandleStandardArgs)
 # handle the QUIETLY and REQUIRED arguments and set GROMACS_FOUND to TRUE
 # if all listed variables are TRUE
-find_package_handle_standard_args(GROMACS DEFAULT_MSG GROMACS_LIBRARY GROMACS_INCLUDE_DIR)
+find_package_handle_standard_args(GROMACS DEFAULT_MSG GROMACS_LIBRARY
+GROMACS_INCLUDE_DIR)
 
-mark_as_advanced(GROMACS_INCLUDE_DIR GROMACS_LIBRARY GROMACS_DEFINITIONS GROMACS_PKG GROMACS_VERSION GROMACS_DEP_LIBRARIES)
+mark_as_advanced(GROMACS_INCLUDE_DIR GROMACS_LIBRARY
+GROMACS_DEFINITIONS GROMACS_PKG GROMACS_VERSION GROMACS_DEP_LIBRARIES)

@@ -11,15 +11,10 @@
 ##############################################################
 ################### CHECKING GROMACS PATH ####################
 ##############################################################
-find_package(GROMACS COMPONENTS "libgromacs")
-if (NOT GROMACS_FOUND)
-	message(STATUS "Continue checking for other Gromacs version library file")
-endif(NOT GROMACS_FOUND)
 
-if (NOT GROMACS_FOUND)
-	find_package(GROMACS COMPONENTS "libgmx")
-endif(NOT GROMACS_FOUND)
 
+message(STATUS "Checking for Gromacs")
+find_package(GROMACS)
 if (NOT GROMACS_FOUND)
 	message(FATAL_ERROR "\nGromacs path is not defined.....\nUSE:\n -DGMX_PATH=/path/to/gromacs\n  or  \n export CMAKE_PREFIX_PATH=\"/path/to/gromacs\"\n" )
 endif(NOT GROMACS_FOUND)
